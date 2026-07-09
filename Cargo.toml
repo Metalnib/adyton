@@ -1,6 +1,6 @@
 [package]
 name = "adyton"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.96"
 description = "Natural language → shell command, streamed to your prompt — never executed for you"

@@ -419,7 +419,10 @@ data: [DONE]\n\n";
     );
 
     let request = String::from_utf8_lossy(&request_rx.recv().unwrap()).into_owned();
-    assert!(request.contains("terminal assistant"), "ask system prompt");
+    assert!(
+        request.contains("Answer the user's question directly"),
+        "ask system prompt"
+    );
     assert!(
         request.contains("TestOS 1.0"),
         "same context bundle as suggest"

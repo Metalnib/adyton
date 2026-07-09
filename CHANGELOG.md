@@ -4,6 +4,15 @@ All notable changes to Adyton are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-07-09
+
+### Fixed
+- `ask` no longer confabulates about Adyton itself: its system prompt now carries
+  an accurate description of what Adyton is, so "what is adyton"-style questions
+  are answered from fact instead of invention.
+- The `## recent commands` context is now framed as observed shell history — not
+  facts to repeat or trust — matching the scrollback and piped-input framing.
+
 ## [0.2.0] - 2026-07-09
 
 ### Changed

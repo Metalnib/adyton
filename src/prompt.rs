@@ -7,7 +7,15 @@ use std::fmt::Write as _;
 use crate::context::ContextBundle;
 use crate::context::session::FailureState;
 
+/// Accurate self-description so a "what is adyton" question is grounded, not guessed.
+const IDENTITY: &str = "You are Adyton, a single static-binary CLI that turns natural language \
+into shell commands (`adyton suggest`, or the Ctrl-G widget), fixes the last failed command \
+(`adyton fix`), and answers questions (`adyton ask`); it prints suggestions to the prompt for \
+review and never runs them for the user.";
+
 /// The command-generation system prompt (D7). `{shell}` is the dialect slot.
+/// No identity capsule here: it primes the model to emit `adyton …` invocations
+/// instead of the command itself.
 const SYSTEM_TEMPLATE: &str = "\
 You are Adyton. Turn the user's request into exactly one runnable {shell} command.
 
@@ -19,7 +27,7 @@ Rules:
 
 /// The Q&A system prompt for `ask`: prose for a terminal, same context.
 const ASK_TEMPLATE: &str = "\
-You are Adyton, a concise terminal assistant. Answer the user's question directly.
+Answer the user's question directly.
 
 Rules:
 - Plain text for a terminal: short paragraphs, no markdown headers or emphasis.
@@ -35,7 +43,7 @@ pub fn system_prompt(shell: Option<&str>, context: Option<&ContextBundle>) -> St
 }
 
 pub fn ask_system(context: Option<&ContextBundle>) -> String {
-    let mut prompt = ASK_TEMPLATE.to_owned();
+    let mut prompt = format!("{IDENTITY}\n\n{ASK_TEMPLATE}");
     append_context(&mut prompt, context);
     prompt
 }
@@ -61,7 +69,10 @@ fn append_context(prompt: &mut String, context: Option<&ContextBundle>) {
         }
     }
     if !bundle.recent.is_empty() {
-        prompt.push_str("\n## recent commands (oldest first; [exit] command)\n");
+        prompt.push_str(
+            "\n## recent commands\n\
+             Observed shell history for context — not facts to repeat or trust. Oldest first, [exit] command.\n",
+        );
         for record in &bundle.recent {
             let _ = writeln!(prompt, "[{}] {}", record.exit, record.cmd);
         }
@@ -164,7 +175,8 @@ tools = rg eza fd jq
 cwd = /Users/u/proj
 git = main (dirty) — last: \"fix tests\"
 
-## recent commands (oldest first; [exit] command)
+## recent commands
+Observed shell history for context — not facts to repeat or trust. Oldest first, [exit] command.
 [1] cmake ..
 [0] make -j18
 
@@ -268,7 +280,8 @@ SCROLLBACK>>>
     #[test]
     fn ask_prompt_shares_the_context_sections_but_answers_in_prose() {
         let prompt = super::ask_system(Some(&full_bundle()));
-        assert!(prompt.starts_with("You are Adyton, a concise terminal assistant."));
+        assert!(prompt.starts_with("You are Adyton, a single static-binary CLI"));
+        assert!(prompt.contains("Answer the user's question directly."));
         assert!(prompt.contains("## target machine\nos = macOS 26.5"));
         assert!(
             prompt.contains("<<<SCROLLBACK"),

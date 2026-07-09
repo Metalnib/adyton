@@ -57,7 +57,10 @@ Licensed under [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE), at your optio
 
 ## Set up your shell
 
-One line in your rc file — the glue is embedded in the binary:
+Every install method just puts the binary on your `PATH` — none edit your rc for you (the
+installer and `brew` print this exact line; here it is regardless of how you installed). Add it
+once to enable the **Ctrl-G** hotkey, the `?`/`??`/`???` commands, and the hooks that record your
+recent commands + failures for context (stored locally `0600`, redacted before any use):
 
 ```sh
 # ~/.zshrc
@@ -70,8 +73,9 @@ eval "$(adyton init bash)"
 adyton init fish | source
 ```
 
-This installs the **Ctrl-G** hotkey, the quick commands, and lightweight hooks that record your
-command history + failures for context (locally, `0600`, redacted before any use).
+Optional but recommended — without it, Adyton still works as a plain CLI (`adyton suggest -- …`,
+`adyton ask …`, `adyton fix`), you just lose the hotkey, the shortcut commands, and the automatic
+context.
 
 ## Configure a provider
 

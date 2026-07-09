@@ -1182,12 +1182,13 @@ fn set_key_for_unknown_profile_is_config_error_before_touching_the_keychain() {
     let mut child = cmd.spawn().unwrap();
     {
         use std::io::Write as _;
-        child
+        // The child rejects the unknown profile and exits BEFORE reading stdin,
+        // so this write may hit EPIPE — that's expected, don't unwrap it.
+        let _ = child
             .stdin
             .as_mut()
             .unwrap()
-            .write_all(b"sk-would-be-a-key")
-            .unwrap();
+            .write_all(b"sk-would-be-a-key");
     }
     let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(3));

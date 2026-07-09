@@ -15,7 +15,6 @@ jobs:
   build:
     name: build ${{ matrix.triple }}
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
@@ -28,33 +27,31 @@ jobs:
             budget: 1572864
           - triple: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            container: rust:1-alpine
             budget: 2097152
           - triple: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
-            container: rust:1-alpine
             budget: 2097152
     steps:
+      # No container: JS actions (checkout) need glibc Node, which fails in an
+      # Alpine/musl container. Build musl natively-cross on the glibc runner
+      # with musl-tools (the recipe ci.yml already uses for x86_64-musl).
       - uses: actions/checkout@v4
-      - name: alpine build deps
-        if: matrix.container == 'rust:1-alpine'
-        run: apk add --no-cache musl-dev build-base tar file
-      - name: rust toolchain (macOS)
-        if: ${{ !matrix.container }}
-        run: rustup toolchain install stable --profile minimal
-      # Native build: host arch == target triple, so no --target needed.
-      - run: cargo build --release
+      - name: musl deps
+        if: contains(matrix.triple, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup toolchain install stable --profile minimal && rustup target add ${{ matrix.triple }}
+      - run: cargo build --release --target ${{ matrix.triple }}
       - name: size gate (spec §8)
-        run: scripts/ci/size-gate.sh target/release/adyton ${{ matrix.budget }}
+        run: scripts/ci/size-gate.sh target/${{ matrix.triple }}/release/adyton ${{ matrix.budget }}
       - name: verify static (musl)
-        if: matrix.container == 'rust:1-alpine'
-        run: file target/release/adyton | grep -q static
+        if: contains(matrix.triple, 'linux-musl')
+        run: file target/${{ matrix.triple }}/release/adyton | grep -q static
       - name: package
         # COPYFILE_DISABLE stops macOS bsdtar embedding ._* / xattr entries that
         # make GNU tar warn on extraction (seen in the S17 install test).
         run: |
           name="adyton-${GITHUB_REF_NAME}-${{ matrix.triple }}"
-          COPYFILE_DISABLE=1 tar -czf "$name.tar.gz" -C target/release adyton
+          COPYFILE_DISABLE=1 tar -czf "$name.tar.gz" -C target/${{ matrix.triple }}/release adyton
       - uses: actions/upload-artifact@v4
         with:
           name: adyton-${{ matrix.triple }}

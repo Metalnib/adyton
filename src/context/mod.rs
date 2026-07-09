@@ -298,7 +298,9 @@ mod tests {
         let cache = temp_cache("degraded");
         let (snapshot, _) = load(&cache, &|_| None, &env_shell, "0.1.0");
 
-        assert_eq!(snapshot.get("os"), Some(std::env::consts::OS));
+        // os survives probe-less (env const on macOS; /etc/os-release on Linux) —
+        // presence is the contract, not a specific string.
+        assert!(snapshot.get("os").is_some_and(|v| !v.is_empty()));
         assert_eq!(snapshot.get("arch"), Some(std::env::consts::ARCH));
         assert_eq!(snapshot.get("shell"), Some("zsh"));
         assert_eq!(snapshot.get("kernel"), None);

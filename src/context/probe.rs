@@ -450,7 +450,12 @@ mod tests {
                 .find(|(key, _)| key == k)
                 .map(|(_, v)| v.as_str())
         };
-        assert_eq!(get("os"), Some(std::env::consts::OS), "probe-less fallback");
+        // os is present even probe-less (env::consts::OS, or /etc/os-release
+        // which os_name reads directly on Linux) — assert presence, not value.
+        assert!(
+            get("os").is_some_and(|v| !v.is_empty()),
+            "probe-less os fallback"
+        );
         assert_eq!(get("arch"), Some(std::env::consts::ARCH));
         assert_eq!(get("shell"), Some("zsh"), "basename without version probe");
         assert_eq!(get("adyton"), Some("0.1.0"));

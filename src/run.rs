@@ -265,15 +265,25 @@ fn stream_command(
 /// Best-effort: a spawn failure or timeout yields whatever was captured.
 fn rerun_capture(failure: &FailureState, timeout: Duration) -> Option<String> {
     let shell = failure.shell.as_deref().unwrap_or("sh");
-    let mut child = std::process::Command::new(shell)
+    let mut command = std::process::Command::new(shell);
+    command
         .arg("-c")
         .arg(&failure.cmd)
         .current_dir(&failure.cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .ok()?;
+        .stderr(std::process::Stdio::piped());
+    // Own process group: a runaway command's *grandchildren* (e.g. `sh -c
+    // "sleep 30"` where the shell forks sleep) hold the stdout pipe open, so
+    // killing only the direct child leaves the reader threads blocked for the
+    // command's full lifetime — defeating the deadline. Killing the group
+    // reaps them too.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().ok()?;
 
     let mut stdout = child.stdout.take()?;
     let mut stderr = child.stderr.take()?;
@@ -294,8 +304,7 @@ fn rerun_capture(failure: &FailureState, timeout: Duration) -> Option<String> {
             // Any exit code is fine — it failed before; errors end the wait too.
             Ok(Some(_)) | Err(_) => break,
             Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_process_group(&mut child);
                 break;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
@@ -306,6 +315,27 @@ fn rerun_capture(failure: &FailureState, timeout: Duration) -> Option<String> {
     let clean = redact::redact_block(&combined);
     let capped = live::tail_bytes(&clean, live::SCROLLBACK_CAP);
     (!capped.is_empty()).then_some(capped)
+}
+
+/// Kill the whole process group (child is its leader via `process_group(0)`),
+/// so grandchildren holding the pipes die and the reader joins unblock.
+#[cfg(unix)]
+fn kill_process_group(child: &mut std::process::Child) {
+    // Negative pid = the group. `kill` is frequently only a shell builtin (no
+    // `/bin/kill` on e.g. Debian slim), so route through `sh`; avoids a libc
+    // dependency, and the pid is an integer we produced — no injection.
+    let _ = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("kill -KILL -{}", child.id()))
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn unix_now() -> u64 {

@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-latest # arm64 → aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+      - run: scripts/ci/forbidden-deps.sh
+      # Budgets: specification §8 (macOS ≤ 1.5 MB, startup ≤ 20 ms)
+      - run: scripts/ci/size-gate.sh target/release/adyton 1572864
+      - run: scripts/ci/startup-gate.sh target/release/adyton 20
+
+  linux-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup toolchain install stable --profile minimal
+      - run: rustup target add x86_64-unknown-linux-musl
+      - run: cargo test
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - run: scripts/ci/forbidden-deps.sh
+      # Budgets: specification §8 (musl ≤ 2.0 MB (measured 1.57 MB static))
+      - run: scripts/ci/size-gate.sh target/x86_64-unknown-linux-musl/release/adyton 2097152
+      - run: scripts/ci/startup-gate.sh target/x86_64-unknown-linux-musl/release/adyton 20
+      - name: verify fully static
+        run: |
+          file target/x86_64-unknown-linux-musl/release/adyton
+          ! ldd target/x86_64-unknown-linux-musl/release/adyton 2>/dev/null || {
+            echo "expected a static binary" >&2; exit 1; }

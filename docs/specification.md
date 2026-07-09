@@ -250,7 +250,8 @@ widget) is never read — reading would block on EOF.
 
 | Metric | Budget | Measured baseline |
 |---|---|---|
-| Stripped binary, aarch64-apple-darwin | ≤ 1.5 MB | 1.24 MB |
+| Stripped binary, aarch64-apple-darwin | ≤ 1.5 MB | 1,371,120 B |
+| Stripped binary, x86_64-apple-darwin | ≤ 1.6 MB | 1,593,100 B — cross-compiled on the arm64 macOS runner (Intel runners retired); x86_64 runs ~16% larger |
 | Stripped binary, linux-musl | ≤ 2.0 MB | aarch64: 1,642,776 B · x86_64: 1,962,784 B — both fully static (x86_64 verified by executing on glibc Debian) |
 | Cold start → usage error (`adyton`) | ≤ 20 ms | ~2 ms |
 | suggest local overhead (spawn → request written), warm cache | ≤ 20 ms | — |

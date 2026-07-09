@@ -1,9 +1,9 @@
 name: release
 
-# Tag-driven, reproducible releases (spec §12). Each target builds NATIVELY on
-# a matching-arch runner (darwin on macOS runners; musl inside rust:1-alpine on
-# x86_64 + arm64 Linux runners) — no cross-compilation, matching the locally
-# verified builds. The `--target` triple is only the artifact name.
+# Tag-driven, reproducible releases (spec §12). darwin targets build on
+# matching-arch macOS runners; musl targets build natively-cross on glibc Linux
+# runners with musl-tools (the ci.yml recipe) — no containers, so the JS actions
+# get the glibc Node they require. Every triple's binary is fully static.
 on:
   push:
     tags: ['v*']
@@ -22,9 +22,12 @@ jobs:
           - triple: aarch64-apple-darwin
             os: macos-latest
             budget: 1572864
+          # Cross-compiled on the arm64 runner (Apple's toolchain is universal):
+          # GitHub is retiring the Intel macos-13 runners, and x86_64 code runs
+          # ~16% larger than arm64, hence the higher budget (spec §8).
           - triple: x86_64-apple-darwin
-            os: macos-13
-            budget: 1572864
+            os: macos-latest
+            budget: 1677721
           - triple: x86_64-unknown-linux-musl
             os: ubuntu-latest
             budget: 2097152
@@ -35,7 +38,7 @@ jobs:
       # No container: JS actions (checkout) need glibc Node, which fails in an
       # Alpine/musl container. Build musl natively-cross on the glibc runner
       # with musl-tools (the recipe ci.yml already uses for x86_64-musl).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: musl deps
         if: contains(matrix.triple, 'linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -52,7 +55,7 @@ jobs:
         run: |
           name="adyton-${GITHUB_REF_NAME}-${{ matrix.triple }}"
           COPYFILE_DISABLE=1 tar -czf "$name.tar.gz" -C target/${{ matrix.triple }}/release adyton
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: adyton-${{ matrix.triple }}
           path: adyton-*.tar.gz
@@ -62,13 +65,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - name: checksums
         run: cd dist && shasum -a 256 *.tar.gz > SHA256SUMS.txt && cat SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.tar.gz
@@ -83,7 +86,7 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: render + push formula
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}

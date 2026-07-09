@@ -231,6 +231,61 @@ Portfile stays version-bumped by CI. NOT in scope: `cargo-binstall`, `crates.io`
 
 ---
 
+## M7 — v0.2.0: response quality & overlay UX  ✅ (implemented)
+
+Goal: kill the 1024-token papercut, tell the user when a reply is clipped, surface the model's
+reasoning while it streams, and ship human release notes. Zero new deps — all four ride the
+existing wire event model + stderr overlay.
+
+### S22 · max_tokens default + truncation guard — **S**
+- Default `max_tokens` 1024 → **4096** (`config.rs:85`; update wire + config tests). It's a *cap*,
+  not a target, so short commands cost the same — this only stops reasoning/prose being clipped.
+- Thread `stop_reason` out of `stream_command` (today dropped at `run.rs:254`); on
+  `length`/`max_tokens`:
+  - `suggest`/`fix` (command buffered before print): **suppress** the truncated command and return
+    the advice error — never insert a half-command at the prompt.
+  - `ask` (streamed live): print the partial, then a stderr warning (can't un-stream).
+- Advice names the fix (`adyton config set profile.<p>.max_tokens 16384`) and, if reasoning deltas
+  were seen (S23), says "this is a reasoning model" explicitly.
+Acceptance: a truncated `suggest` errors with advice and prints nothing on stdout; default is 4096;
+README §config + spec §3 updated.
+
+### S23 · thinking in the overlay — **M** *(ships experimental)*
+- New `Event::ReasoningDelta(String)` in `wire/event.rs`.
+- Anthropic: emit the `thinking_delta` currently **skipped** at `anthropic.rs:201` (extended
+  thinking). OpenAI-compatible: parse `reasoning_content` / `reasoning` deltas (DeepSeek-R1,
+  thinking-Qwen, vLLM, routers; OpenAI's own API streams only token counts, no reasoning text).
+- Overlay (`overlay.rs`): a `reasoning()` method + a dimmed `💭 …last thoughts…` line that flips to
+  the command/answer tail on the first `TextDelta`. Reasoning **never** reaches stdout — critical
+  for `ask` capture (`run.rs:191`).
+- On by default (TTY + non-`--plain`); `--no-thinking` flag + `show_thinking` config key to disable.
+Acceptance: unit — `reasoning`/`reasoning_content` (openai) and `thinking_delta` (anthropic) parse
+to `ReasoningDelta`, and `frame_line` renders the `💭` tail until the command starts; integration —
+a reasoning+content stream yields only the command/answer on stdout (the overlay is inert under
+piped stderr, so stdout purity is the observable property). NOTE: the Anthropic arm is parse-ready
+but won't fire until the request opts into a `thinking` block (deferred); the live path is the
+OpenAI/vLLM `reasoning` field.
+
+### S24 · CHANGELOG + human release notes — **S**
+`generate_release_notes: true` yields noise (we push straight to `main`, no PRs). Keep a
+`CHANGELOG.md` (Keep a Changelog format, `## [x.y.z] — YYYY-MM-DD`); the `release` job extracts the
+tag's section and passes it as the Release `body` (auto-notes at most a fallback). Backfill 0.1.0 +
+0.1.1. Acceptance: `v0.2.0`'s Release body is the hand-written CHANGELOG section, not a commit dump.
+
+### S25 · `extra_body` + CLI ergonomics — **S** *(added mid-M7; `extra_body` ships experimental)*
+Research finding: there is **no universal API flag** to disable reasoning — it's per-model
+(`reasoning_effort` OpenAI · `chat_template_kwargs.enable_thinking` Qwen3/vLLM · Anthropic off by
+default · DeepSeek-R1 can't · Nemotron-Cascade-2 via chat template, which **Vultr's allowlist
+strips**). So the portable lever is a per-profile **`extra_body`**: a JSON object shallow-merged into
+the request body (`wire::json::merge_into`), validated by `config check` (`wire::json::is_object`) —
+JSON stays in `wire/` per D3, config stores it raw. Also: a run option placed **before** the command
+now returns a "goes after the command" hint, not a bare "invalid option" (`--version`/`--help` remain
+the only leading flags — standard subcommand convention). Acceptance: `extra_body` reaches the
+request body (wire + integration tests); `config check` rejects a non-object; the leading-option
+error names the flag and the fix.
+
+---
+
 ## Explicitly deferred (phase 2+ — not stories yet)
 Daemon + warm pool · agent loop/tool calls · async zsh widget · terminal-API scrollback (tier 2b,
 OSC 133) · ghost text · Responses API adapter.

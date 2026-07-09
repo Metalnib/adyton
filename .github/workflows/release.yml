@@ -65,18 +65,33 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - name: checksums
         run: cd dist && shasum -a 256 *.tar.gz > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: release notes from CHANGELOG
+        # The tag's section becomes the Release body — human notes, not a commit
+        # dump (we push straight to main). Fail loud if the section is missing.
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v v="$ver" '
+            index($0, "## [" v "]") == 1 { grab = 1; next }
+            grab && index($0, "## [") == 1 { exit }
+            grab { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for ${ver}"; exit 1
+          fi
+          cat notes.md
       - uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS.txt
-          generate_release_notes: true
+          body_path: notes.md
           fail_on_unmatched_files: true
 
   # S20: render the Homebrew formula from the release checksums and push it to

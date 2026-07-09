@@ -42,6 +42,7 @@ pub fn build_request(
         messages.push(Value::Object(message));
     }
     body.insert("messages".to_owned(), Value::Array(messages));
+    json::merge_into(&mut body, params.extra_body);
 
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     // Local runners (Ollama, llama.cpp) accept keyless requests.
@@ -59,8 +60,6 @@ pub fn build_request(
         body: json::to_string(&Value::Object(body)).into_bytes(),
     }
 }
-
-// --- streaming response → unified events --------------------------------
 
 /// `chat.completion.chunk` — the superset observed across compatible servers.
 /// Everything optional: role-only chunks, usage-only final chunks (empty or
@@ -80,6 +79,9 @@ struct Choice {
 #[derive(Deserialize)]
 struct Delta {
     content: Option<String>,
+    // vLLM/Nemotron stream thinking as `reasoning`, DeepSeek-R1 as `reasoning_content`.
+    reasoning_content: Option<String>,
+    reasoning: Option<String>,
     tool_calls: Option<Vec<WireToolCall>>,
 }
 
@@ -146,6 +148,15 @@ impl<R: BufRead> Events<R> {
     fn ingest(&mut self, chunk: &Chunk) {
         for choice in chunk.choices.iter().flatten() {
             if let Some(delta) = &choice.delta {
+                if let Some(thinking) = delta
+                    .reasoning_content
+                    .as_ref()
+                    .or(delta.reasoning.as_ref())
+                    && !thinking.is_empty()
+                {
+                    self.queue
+                        .push_back(Event::ReasoningDelta(thinking.clone()));
+                }
                 if let Some(content) = &delta.content
                     && !content.is_empty()
                 {
@@ -254,6 +265,7 @@ mod tests {
             max_tokens: 1024,
             token_param: TokenParam::MaxTokens,
             temperature: None,
+            extra_body: None,
         }
     }
 
@@ -328,6 +340,25 @@ mod tests {
         assert!((temperature - 0.2).abs() < f64::EPSILON);
     }
 
+    #[test]
+    fn extra_body_merges_into_the_request() {
+        let with_extra = ChatParams {
+            extra_body: Some(r#"{"reasoning_effort":"none","top_p":0.9}"#),
+            ..params()
+        };
+        let body = body_of(&build_request("http://x/v1", None, &[], &with_extra));
+        assert_eq!(
+            testutil::str_of(&body, "reasoning_effort").as_deref(),
+            Some("none")
+        );
+        assert_eq!(testutil::f64_of(&body, "top_p"), Some(0.9));
+        assert_eq!(
+            testutil::str_of(&body, "model").as_deref(),
+            Some("gpt-4o"),
+            "standard fields survive the merge"
+        );
+    }
+
     fn collect(stream: &str) -> Vec<Event> {
         events(Cursor::new(stream.as_bytes()))
             .collect::<Result<Vec<_>, _>>()
@@ -356,6 +387,27 @@ data: [DONE]\n\n";
                 },
             ],
             "empty role-start content is skipped; stop reason and usage ride Done"
+        );
+    }
+
+    #[test]
+    fn reasoning_deltas_surface_before_content() {
+        let stream = "\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"let me think\"},\"finish_reason\":null}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\" harder\"},\"finish_reason\":null}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ls\"},\"finish_reason\":\"stop\"}]}\n\n\
+data: [DONE]\n\n";
+        assert_eq!(
+            collect(stream),
+            vec![
+                Event::ReasoningDelta("let me think".to_owned()),
+                Event::ReasoningDelta(" harder".to_owned()),
+                Event::TextDelta("ls".to_owned()),
+                Event::Done {
+                    stop_reason: Some("stop".to_owned()),
+                    usage: None
+                },
+            ]
         );
     }
 

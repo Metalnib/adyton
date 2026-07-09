@@ -59,6 +59,7 @@ timeout_seconds = 60          # whole-request ceiling
 session_log_commands = 20     # command-log records sent (§7.3), 0 disables
 scrollback_lines = 120        # terminal scrollback capture (§7.4), 0 disables
 git_timeout_ms  = 200
+show_thinking = true          # experimental: stream the model's reasoning to the overlay (§6)
 
 [profile.local]
 wire   = openai               # openai | anthropic
@@ -73,8 +74,10 @@ extra_headers = anthropic-beta: token-efficient-tools
 ```
 
 Per-profile keys: `wire`, `base_url`, `model`, `api_key` (discouraged), `api_key_cmd` (executed
-argv-style, stdout = key), `extra_headers` (repeatable), `max_tokens` (default 1024),
-`token_param` (`max_tokens` | `max_completion_tokens`, default per wire), `temperature`.
+argv-style, stdout = key), `extra_headers` (repeatable), `max_tokens` (default 4096),
+`token_param` (`max_tokens` | `max_completion_tokens`, default per wire), `temperature`,
+`extra_body` (**experimental**; a JSON object shallow-merged into the request body — provider-specific
+knobs like `reasoning_effort`; validated by `config check`, parsed only in `wire/` per D3).
 
 **API-key resolution order:** `--api-key` flag → `ADYTON_API_KEY` → `ADYTON_<PROFILE>_API_KEY` →
 `api_key_cmd` (e.g. `security find-generic-password -w -s adyton -a claude`) → `api_key` in file.
@@ -86,7 +89,8 @@ never an argv of any process; `-U` semantics make re-running it a key rotation).
 ## 4. Wire adapters
 
 One internal event stream both adapters emit: `TextDelta(String)` ·
-`ToolCallDelta{index, id?, name?, args_fragment}` · `Done{stop_reason, usage?}` · `WireError{status, body}`.
+`ReasoningDelta(String)` (overlay-only, §6) · `ToolCallDelta{index, id?, name?, args_fragment}` ·
+`Done{stop_reason, usage?}` · `WireError{status, body}`.
 All JSON (de)serialization lives in `src/wire/` (D3). Parse failures wrap the raw line:
 `"unparseable chunk: <line>"`.
 
@@ -95,7 +99,8 @@ All JSON (de)serialization lives in `src/wire/` (D3). Parse failures wrap the ra
 - Headers: `Authorization: Bearer <key>` (omitted if no key — local runners), `Content-Type: application/json`, + `extra_headers`.
 - Body: `{model, stream:true, messages:[{role,content}], <token_param>: n, temperature?}`.
 - SSE: lines `data: <json>`; ignore empty/comment lines; terminate on `data: [DONE]` or EOF.
-  Text at `choices[0].delta.content`; tool-call args accumulate from
+  Text at `choices[0].delta.content`; reasoning at `delta.reasoning_content` or `delta.reasoning`
+  → `ReasoningDelta`; tool-call args accumulate from
   `choices[0].delta.tool_calls[i].function.arguments` (string fragments, concatenate by `index`);
   `finish_reason` → `Done`.
 - Non-2xx → `WireError` with the full response body (never fed to the SSE parser).
@@ -106,9 +111,11 @@ All JSON (de)serialization lives in `src/wire/` (D3). Parse failures wrap the ra
 - Body: `{model, stream:true, max_tokens (required), system?, messages}` — system prompt is the
   top-level `system` field, not a message.
 - SSE named events; dispatch on JSON `type`: `content_block_delta` with `delta.type=text_delta`
-  → `TextDelta(delta.text)`; `input_json_delta` → `ToolCallDelta(args_fragment=delta.partial_json)`;
-  `message_delta` carries `stop_reason`/`usage`; `message_stop` → `Done`. Ignore `ping`;
-  `error` events → `WireError`. There is **no `[DONE]` sentinel**.
+  → `TextDelta(delta.text)`; `thinking_delta` → `ReasoningDelta(delta.thinking)` (only streamed
+  when the request opts into extended thinking); `input_json_delta`
+  → `ToolCallDelta(args_fragment=delta.partial_json)`; `message_delta` carries
+  `stop_reason`/`usage`; `message_stop` → `Done`. Ignore `ping`; `error` events → `WireError`.
+  There is **no `[DONE]` sentinel**.
 
 ### 4.3 Transport (both)
 ureq 3 blocking; read via `resp.body_mut().as_reader()` wrapped in `BufRead` line iteration
@@ -149,11 +156,14 @@ Written with `umask 077`. `fix` errors (exit 5) if absent or `ts` older than 10 
 
 ## 6. Overlay / streaming UX (stderr)
 
-When stderr is a TTY and `--plain` is absent: single status line, rewritten in place
-(`\r`+clear): spinner + phase (`context → request → streaming`), then the streamed command text
-as `TextDelta`s arrive, dimmed; on `Done` the line is cleared (the real result goes to stdout).
-No cursor addressing beyond `\r`/`\x1b[K`; no alternate screen; no persistent panel (phase 2+).
-Spinner thread stops on first delta or error.
+When stderr is a TTY and `--plain` is absent: an in-place status block. Spinner + phase
+(`context → request → streaming`); while the model streams reasoning (`ReasoningDelta`) a multi-line
+`💭` panel (**experimental**) shows the last few word-wrapped lines (dimmed), gated by `show_thinking`
+/ `--no-thinking`;
+once the answer starts the panel collapses to the single streamed command line (`TextDelta`), dimmed.
+On `Done`/drop the block is cleared (the real result goes to stdout — reasoning never does). Repaint
+is cursor-up + erase-to-end (`\x1b[J`), no alternate screen; panel lines assume a terminal at least
+as wide as the wrap width (~64 cols). Render thread stops on the first answer delta or error.
 
 ## 7. Context collection & redaction
 

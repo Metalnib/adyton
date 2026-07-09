@@ -10,7 +10,7 @@ PortSystem          1.0
 PortGroup           github 1.0
 PortGroup           cargo 1.0
 
-github.setup        Metalnib adyton 0.1.1 v
+github.setup        Metalnib adyton 0.2.0 v
 categories          sysutils
 platforms           {darwin any}
 # Dual-licensed, user's choice (nested list = OR in MacPorts). Verify nesting

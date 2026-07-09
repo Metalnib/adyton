@@ -45,6 +45,7 @@ pub fn build_request(
     let mut messages = Array::new();
     messages.push(Value::Object(message));
     body.insert("messages".to_owned(), Value::Array(messages));
+    json::merge_into(&mut body, params.extra_body);
 
     let mut headers = vec![
         ("content-type".to_owned(), "application/json".to_owned()),
@@ -62,8 +63,6 @@ pub fn build_request(
         body: json::to_string(&Value::Object(body)).into_bytes(),
     }
 }
-
-// --- streaming response → unified events --------------------------------
 
 /// Superset of every named event; all-optional fields instead of enums
 /// (miniserde has no data enums — and this is more forgiving on the wire).
@@ -97,6 +96,7 @@ struct WireDelta {
     #[serde(rename = "type")]
     kind: Option<String>,
     text: Option<String>,
+    thinking: Option<String>,
     partial_json: Option<String>,
     stop_reason: Option<String>,
 }
@@ -160,8 +160,7 @@ impl<R: BufRead> Events<R> {
     }
 
     /// Dispatch on the JSON `type`; the SSE `event:` name mirrors it and is
-    /// deliberately ignored (single source of truth). Returns an error to
-    /// surface, `Ok(true)` when `message_stop` ended the stream.
+    /// deliberately ignored (single source of truth). `Ok(true)` ends the stream.
     fn ingest(&mut self, wire: WireEvent) -> Result<bool> {
         match wire.kind.as_str() {
             "message_start" => {
@@ -198,7 +197,15 @@ impl<R: BufRead> Events<R> {
                                 args_fragment: delta.partial_json.unwrap_or_default(),
                             });
                         }
-                        // thinking_delta, signature_delta, future kinds: skip.
+                        // Only streamed when the request opts into thinking; ready anyway.
+                        Some("thinking_delta") => {
+                            if let Some(thinking) = delta.thinking
+                                && !thinking.is_empty()
+                            {
+                                self.queue.push_back(Event::ReasoningDelta(thinking));
+                            }
+                        }
+                        // signature_delta and future kinds: skip.
                         _ => {}
                     }
                 }
@@ -304,6 +311,7 @@ mod tests {
             max_tokens: 1024,
             token_param: TokenParam::MaxTokens,
             temperature: None,
+            extra_body: None,
         }
     }
 
@@ -446,7 +454,7 @@ event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"
     }
 
     #[test]
-    fn unknown_event_kinds_and_thinking_deltas_are_skipped() {
+    fn thinking_deltas_surface_as_reasoning_and_unknown_kinds_skip() {
         let stream = "\
 data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hmm\"}}\n\n\
 data: {\"type\":\"some_future_event\"}\n\n\
@@ -455,6 +463,7 @@ data: {\"type\":\"message_stop\"}\n\n";
         assert_eq!(
             collect(stream),
             vec![
+                Event::ReasoningDelta("hmm".to_owned()),
                 Event::TextDelta("ok".to_owned()),
                 Event::Done {
                     stop_reason: None,

@@ -165,6 +165,14 @@ fn run_config_check(want: Option<&str>, path: &std::path::Path) -> Result<()> {
         profile.max_tokens,
         profile.token_param().as_str()
     );
+    if let Some(extra) = &profile.extra_body {
+        if !crate::wire::json::is_object(extra) {
+            return Err(Error::Config(format!(
+                "profile \"{name}\": extra_body must be a JSON object, got: {extra}"
+            )));
+        }
+        println!("extra_body = {extra}");
+    }
     for header in &profile.extra_headers {
         let shown = header.split_once(':').map_or(header.as_str(), |(n, _)| n);
         println!("header    = {shown}: …");

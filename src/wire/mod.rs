@@ -51,6 +51,9 @@ pub struct ChatParams<'a> {
     /// Only the openai wire uses this; anthropic always sends `max_tokens`.
     pub token_param: TokenParam,
     pub temperature: Option<f64>,
+    /// Profile `extra_body`: a JSON object shallow-merged into the request body
+    /// (e.g. `reasoning_effort`, `chat_template_kwargs`). Provider-specific.
+    pub extra_body: Option<&'a str>,
 }
 
 /// Profile `extra_headers` entries are validated as `Name: value` at config

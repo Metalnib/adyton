@@ -100,8 +100,7 @@ pub fn self_update(check_only: bool, assume_yes: bool) -> Result<()> {
     Ok(())
 }
 
-/// Download → verify → extract → atomic swap, all inside `dir`. The temp
-/// subdir is removed on every exit path.
+/// All temp work stays inside `dir` (same-filesystem rename), removed on every exit path.
 fn install_update(
     dir: &Path,
     exe: &Path,
@@ -248,7 +247,7 @@ fn sha256_of(file: &Path) -> Result<String> {
     ))
 }
 
-// --- HTTP (a dedicated GET agent; the wire transport is POST-only) ----------
+// A dedicated GET agent — the main wire transport is POST-only.
 
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()

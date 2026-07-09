@@ -41,6 +41,7 @@ pub struct RunOpts {
     pub profile: Option<String>,
     pub no_context: bool,
     pub plain: bool,
+    pub no_thinking: bool,
     pub api_key: Option<String>,
 }
 
@@ -89,6 +90,7 @@ OPTIONS (suggest, fix):
   -p, --profile <name>          provider profile from the config file
       --no-context              send the query only
       --plain                   no spinner or streaming on stderr
+      --no-thinking             hide the model's streamed reasoning (experimental)
       --api-key <key>           override the api key resolution chain
 ";
 
@@ -118,7 +120,21 @@ where
                 "unknown command \"{other}\" (try `adyton --help`)"
             ))),
         },
-        arg => Err(arg.unexpected().into()),
+        arg => Err(unexpected_leading(arg)),
+    }
+}
+
+/// A run-option (`--plain`, `-s`, …) belongs after its command, so a leading one
+/// is a usage error — say where it goes instead of a bare "invalid option".
+fn unexpected_leading(arg: Arg) -> Error {
+    match arg {
+        Arg::Long(name) => Error::Usage(format!(
+            "option '--{name}' must come after the command, e.g. `adyton suggest --{name} …`"
+        )),
+        Arg::Short(c) => Error::Usage(format!(
+            "option '-{c}' must come after the command, e.g. `adyton suggest -{c} …`"
+        )),
+        other @ Arg::Value(_) => other.unexpected().into(),
     }
 }
 
@@ -141,6 +157,7 @@ fn parse_run(parser: &mut Parser, kind: RunKind) -> Result<Command> {
             Arg::Short('p') | Arg::Long("profile") => opts.profile = Some(value_of(parser)?),
             Arg::Long("no-context") => opts.no_context = true,
             Arg::Long("plain") => opts.plain = true,
+            Arg::Long("no-thinking") => opts.no_thinking = true,
             Arg::Long("api-key") => opts.api_key = Some(value_of(parser)?),
             Arg::Long("rerun") if kind == RunKind::Fix => rerun = true,
             Arg::Value(word) => words.push(into_string(word)?),
@@ -339,6 +356,7 @@ mod tests {
             "work",
             "--no-context",
             "--plain",
+            "--no-thinking",
             "--api-key",
             "k",
             "--",
@@ -354,6 +372,7 @@ mod tests {
                     profile: Some("work".to_owned()),
                     no_context: true,
                     plain: true,
+                    no_thinking: true,
                     api_key: Some("k".to_owned()),
                 },
                 query: "list ports".to_owned(),
@@ -477,5 +496,13 @@ mod tests {
     #[test]
     fn unknown_command_names_the_offender() {
         assert!(usage_of(&["sugest"]).contains("sugest"));
+    }
+
+    #[test]
+    fn leading_option_hints_it_belongs_after_the_command() {
+        let msg = usage_of(&["--plain", "suggest", "--", "x"]);
+        assert!(msg.contains("--plain"), "{msg}");
+        assert!(msg.contains("after the command"), "{msg}");
+        assert!(usage_of(&["-s", "zsh", "suggest"]).contains("-s"));
     }
 }

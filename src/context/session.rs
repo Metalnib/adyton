@@ -62,7 +62,7 @@ pub fn session_log_path(cache_dir: &Path, env: &EnvFn) -> Option<PathBuf> {
     Some(cache_dir.join(format!("session-{sanitized}.log")))
 }
 
-// --- failure state (spec §5.3) --------------------------------------------
+// failure state (spec §5.3)
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailureState {

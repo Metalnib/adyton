@@ -20,7 +20,6 @@ fn real_env(key: &str) -> Option<OsString> {
     std::env::var_os(key)
 }
 
-/// `$var` when set and non-empty, else `$HOME/<fallback>`.
 fn base_dir(var: &str, fallback: &str, env: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf> {
     if let Some(dir) = env(var)
         && !dir.is_empty()

@@ -290,7 +290,113 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
         !request.contains("Bearer"),
         "never Bearer on the anthropic wire"
     );
-    assert!(request.contains("\"max_tokens\":1024"), "always required");
+    assert!(request.contains("\"max_tokens\":4096"), "always required");
+}
+
+#[test]
+fn reasoning_never_leaks_into_the_command_on_stdout() {
+    let home = TempHome::new("suggest-reasoning");
+    let stream = "\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"the user wants disk usage\"},\"finish_reason\":null}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"df -h\"},\"finish_reason\":\"stop\"}]}\n\n\
+data: [DONE]\n\n";
+    let (base_url, _rx) = mock_llm(sse_response(stream));
+    home.write_config(&openai_profile(&base_url));
+    home.seed_context_cache();
+
+    let out = home.run(
+        &["suggest", "--shell", "zsh", "--", "disk", "usage"],
+        &[("ADYTON_API_KEY", "k")],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "df -h\n",
+        "only the command reaches stdout — reasoning is overlay-only"
+    );
+}
+
+#[test]
+fn a_truncated_command_is_suppressed_with_advice() {
+    let home = TempHome::new("suggest-truncated");
+    let stream = "\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"find / -name \"},\"finish_reason\":null}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n\
+data: [DONE]\n\n";
+    let (base_url, _rx) = mock_llm(sse_response(stream));
+    home.write_config(&openai_profile(&base_url));
+    home.seed_context_cache();
+
+    let out = home.run(
+        &["suggest", "--", "find", "something"],
+        &[("ADYTON_API_KEY", "k")],
+    );
+    assert!(
+        !out.status.success(),
+        "truncation must fail, not emit a half-command"
+    );
+    assert_eq!(
+        stdout(&out),
+        "",
+        "the partial command must never reach stdout"
+    );
+    assert!(
+        stderr(&out).contains("max_tokens"),
+        "advice names the fix: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn extra_body_is_merged_into_the_request() {
+    let home = TempHome::new("extra-body");
+    let (base_url, request_rx) = mock_llm(sse_response(OPENAI_STREAM));
+    home.write_config(&format!(
+        "default_profile = mock\n\n[profile.mock]\nwire = openai\nbase_url = {base_url}\nmodel = test-model\nextra_body = {{\"reasoning_effort\":\"none\"}}\n"
+    ));
+    home.seed_context_cache();
+
+    let out = home.run(
+        &["suggest", "--", "show", "the", "tree"],
+        &[("ADYTON_API_KEY", "k")],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let request = String::from_utf8_lossy(&request_rx.recv().unwrap()).into_owned();
+    assert!(
+        request.contains("\"reasoning_effort\":\"none\""),
+        "extra_body must reach the request body: {request}"
+    );
+}
+
+#[test]
+fn ask_keeps_the_streamed_partial_then_warns_when_truncated() {
+    let home = TempHome::new("ask-truncated");
+    let stream = "\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"hmm\"},\"finish_reason\":null}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"The answer is\"},\"finish_reason\":null}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n\
+data: [DONE]\n\n";
+    let (base_url, _rx) = mock_llm(sse_response(stream));
+    home.write_config(&openai_profile(&base_url));
+    home.seed_context_cache();
+
+    let out = home.run(&["ask", "--", "explain"], &[("ADYTON_API_KEY", "k")]);
+    assert!(
+        out.status.success(),
+        "ask keeps the already-streamed partial: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        stdout(&out),
+        "The answer is\n",
+        "reasoning stripped from stdout; the partial answer is kept"
+    );
+    assert!(
+        stderr(&out).contains("cut off") || stderr(&out).contains("max_tokens"),
+        "truncation warned on stderr: {}",
+        stderr(&out)
+    );
 }
 
 #[test]
@@ -477,7 +583,7 @@ fn host_triple() -> &'static str {
 
 /// §12.1 end-to-end: a copy of the binary updates *itself* from a mock release
 /// (download → verify sha256 → extract → atomic rename) and then runs the new
-/// payload. This is the assertion that matters most (advisor #1 + #3).
+/// payload. This is the assertion that matters most.
 #[test]
 fn self_update_verifies_extracts_and_atomically_swaps_the_binary() {
     let home = TempHome::new("selfupdate");
@@ -563,7 +669,6 @@ fn self_update_verifies_extracts_and_atomically_swaps_the_binary() {
         String::from_utf8_lossy(&out.stdout)
     );
 
-    // The binary at the same path is now the new payload.
     let after = std::process::Command::new(&exe).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&after.stdout).trim(),

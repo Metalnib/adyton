@@ -27,6 +27,7 @@ struct Session {
     max_tokens: u32,
     token_param: TokenParam,
     temperature: Option<f64>,
+    extra_body: Option<String>,
     key: config::ResolvedKey,
 }
 
@@ -53,14 +54,19 @@ fn prepare(opts: &RunOpts) -> Result<Session> {
         max_tokens: profile.max_tokens,
         token_param: profile.token_param(),
         temperature: profile.temperature,
+        extra_body: profile.extra_body.clone(),
         key,
         cfg,
     })
 }
 
+fn thinking_enabled(opts: &RunOpts, cfg: &Config) -> bool {
+    cfg.show_thinking && !opts.no_thinking
+}
+
 pub fn suggest(opts: &RunOpts, query: &str) -> Result<()> {
     let session = prepare(opts)?;
-    let overlay = Overlay::start(opts.plain);
+    let overlay = Overlay::start(opts.plain, thinking_enabled(opts, &session.cfg));
     let (system, user) = {
         overlay.phase("context");
         let bundle = collect_context(opts, &session.cfg);
@@ -89,7 +95,7 @@ pub fn fix(opts: &RunOpts, rerun: bool) -> Result<()> {
         )));
     }
 
-    let overlay = Overlay::start(opts.plain);
+    let overlay = Overlay::start(opts.plain, thinking_enabled(opts, &session.cfg));
     let rerun_output = if rerun {
         overlay.phase("rerun");
         // The rerun executes the ORIGINAL command; only the prompt below
@@ -145,16 +151,12 @@ fn request_for(session: &Session, system: &str, user: &str) -> HttpRequest {
             max_tokens: session.max_tokens,
             token_param: session.token_param,
             temperature: session.temperature,
+            extra_body: session.extra_body.as_deref(),
         },
     )
 }
 
-fn complete(
-    session: &Session,
-    overlay: &Overlay,
-    system: &str,
-    user: &str,
-) -> Result<(String, Option<u64>)> {
+fn complete(session: &Session, overlay: &Overlay, system: &str, user: &str) -> Result<Completion> {
     let request = request_for(session, system, user);
     overlay.phase("request");
     let transport = UreqTransport::new(Duration::from_secs(session.cfg.timeout_seconds));
@@ -167,7 +169,7 @@ pub fn ask(opts: &RunOpts, question: &str) -> Result<()> {
     use std::io::Write as _;
 
     let session = prepare(opts)?;
-    let overlay = Overlay::start(opts.plain);
+    let overlay = Overlay::start(opts.plain, thinking_enabled(opts, &session.cfg));
     overlay.phase("context");
     let bundle = collect_context(opts, &session.cfg);
     let system = prompt::ask_system(bundle.as_ref());
@@ -188,6 +190,8 @@ pub fn ask(opts: &RunOpts, question: &str) -> Result<()> {
     let mut overlay = Some(overlay);
     let mut stdout = std::io::stdout().lock();
     let mut printed = false;
+    let mut stop_reason = None;
+    let mut saw_reasoning = false;
     for event in wire::events(session.wire_kind, reader) {
         match event {
             Ok(Event::TextDelta(delta)) => {
@@ -196,8 +200,20 @@ pub fn ask(opts: &RunOpts, question: &str) -> Result<()> {
                 let _ = stdout.write_all(delta.as_bytes());
                 let _ = stdout.flush();
             }
+            Ok(Event::ReasoningDelta(delta)) => {
+                saw_reasoning = true;
+                if let Some(o) = &overlay {
+                    o.reasoning(&delta);
+                }
+            }
             Ok(Event::ToolCallDelta { .. }) => {}
-            Ok(Event::Done { .. }) => break,
+            Ok(Event::Done {
+                stop_reason: reason,
+                ..
+            }) => {
+                stop_reason = reason;
+                break;
+            }
             Err(err) => {
                 drop(overlay.take());
                 if printed {
@@ -209,27 +225,80 @@ pub fn ask(opts: &RunOpts, question: &str) -> Result<()> {
     }
     drop(overlay.take());
     if !printed {
-        return Err(Error::Provider(
-            "the model returned no answer — a reasoning model may need a larger max_tokens"
-                .to_owned(),
-        ));
+        return Err(Error::Provider(budget_hint(
+            &session,
+            saw_reasoning,
+            None,
+            "the model returned no answer",
+        )));
     }
     let _ = stdout.write_all(b"\n");
+    // Streamed live, so the partial is already on screen — warn, can't suppress.
+    if is_truncated(stop_reason.as_deref()) {
+        eprintln!(
+            "adyton: {}",
+            budget_hint(
+                &session,
+                saw_reasoning,
+                None,
+                "the answer was cut off at the token limit"
+            )
+        );
+    }
     Ok(())
 }
 
-fn emit(session: &Session, (command, output_tokens): (String, Option<u64>)) -> Result<()> {
-    if command.is_empty() {
-        // Seen live: reasoning models can burn the whole budget thinking and
-        // never emit content. Say so, actionably.
-        let spent = output_tokens.map_or(String::new(), |n| format!(" after {n} output tokens"));
-        return Err(Error::Provider(format!(
-            "the model returned no command{spent} — a reasoning model may need a larger \
-             max_tokens (adyton config set profile.{}.max_tokens 16384)",
-            session.profile_name
+struct Completion {
+    text: String,
+    output_tokens: Option<u64>,
+    stop_reason: Option<String>,
+    saw_reasoning: bool,
+}
+
+/// A hit token ceiling: `length` (openai) or `max_tokens` (anthropic).
+fn is_truncated(stop: Option<&str>) -> bool {
+    matches!(stop, Some("length" | "max_tokens"))
+}
+
+fn budget_hint(session: &Session, saw_reasoning: bool, spent: Option<u64>, what: &str) -> String {
+    let model = if saw_reasoning {
+        " — this looks like a reasoning model"
+    } else {
+        ""
+    };
+    let spent = spent.map_or(String::new(), |n| format!(" after {n} output tokens"));
+    format!(
+        "{what}{spent}{model}. Raise the budget: \
+         adyton config set profile.{}.max_tokens 16384",
+        session.profile_name
+    )
+}
+
+fn emit(session: &Session, c: Completion) -> Result<()> {
+    let Completion {
+        text,
+        output_tokens,
+        stop_reason,
+        saw_reasoning,
+    } = c;
+    if text.is_empty() {
+        return Err(Error::Provider(budget_hint(
+            session,
+            saw_reasoning,
+            output_tokens,
+            "the model returned no command",
         )));
     }
-    println!("{command}");
+    // A truncated command is unsafe to run — suppress it.
+    if is_truncated(stop_reason.as_deref()) {
+        return Err(Error::Provider(budget_hint(
+            session,
+            saw_reasoning,
+            output_tokens,
+            "the command was cut off at the token limit",
+        )));
+    }
+    println!("{text}");
     Ok(())
 }
 
@@ -238,26 +307,41 @@ fn stream_command(
     wire_kind: WireKind,
     transport: &dyn Transport,
     request: &HttpRequest,
-) -> Result<(String, Option<u64>)> {
+) -> Result<Completion> {
     let reader = transport.post_stream(request)?;
     overlay.phase("streaming");
     let mut text = String::new();
     let mut output_tokens = None;
+    let mut stop_reason = None;
+    let mut saw_reasoning = false;
     for event in wire::events(wire_kind, reader) {
         match event? {
             Event::TextDelta(delta) => {
                 overlay.delta(&delta);
                 text.push_str(&delta);
             }
+            Event::ReasoningDelta(delta) => {
+                saw_reasoning = true;
+                overlay.reasoning(&delta);
+            }
             // Tool calls belong to the phase-2 agent loop; ignored in MVP.
             Event::ToolCallDelta { .. } => {}
-            Event::Done { usage, .. } => {
+            Event::Done {
+                usage,
+                stop_reason: reason,
+            } => {
                 output_tokens = usage.and_then(|u| u.output_tokens);
+                stop_reason = reason;
                 break;
             }
         }
     }
-    Ok((clean_command(&text), output_tokens))
+    Ok(Completion {
+        text: clean_command(&text),
+        output_tokens,
+        stop_reason,
+        saw_reasoning,
+    })
 }
 
 /// §7.4 tier 3 — the `--rerun` consent path: re-execute the failed command
@@ -370,10 +454,18 @@ fn clean_command(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_command, rerun_capture, shell_name};
+    use super::{clean_command, is_truncated, rerun_capture, shell_name};
     use crate::cli::Shell;
     use crate::context::session::FailureState;
     use std::time::Duration;
+
+    #[test]
+    fn truncation_covers_both_wire_reasons() {
+        assert!(is_truncated(Some("length")), "openai");
+        assert!(is_truncated(Some("max_tokens")), "anthropic");
+        assert!(!is_truncated(Some("stop")));
+        assert!(!is_truncated(None));
+    }
 
     #[test]
     fn clean_command_passes_a_plain_command_through() {

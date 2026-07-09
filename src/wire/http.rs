@@ -29,7 +29,6 @@ pub struct HttpRequest {
 }
 
 pub trait Transport {
-    /// POST and hand back the response body as a buffered line stream.
     fn post_stream(&self, request: &HttpRequest) -> Result<Box<dyn BufRead>>;
 }
 
@@ -126,7 +125,6 @@ mod tests {
         /// deterministic death before the first response byte. (Dropping
         /// without reading would race EPIPE-on-write vs reset-on-read.)
         CloseImmediately,
-        /// Serve a complete response.
         Respond(Vec<u8>),
         /// Serve a prefix, then drop mid-body — death after the first byte.
         RespondThenDie(Vec<u8>),

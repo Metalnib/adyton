@@ -116,9 +116,17 @@ extra_headers = HTTP-Referer: https://yoursite.example
 
 Switch per-invocation with `--profile <name>` or permanently via `default_profile`.
 
-> **Reasoning models** (Nemotron, DeepSeek-R1-style, thinking-mode Qwen): give them token
-> headroom or the thinking eats the whole budget before any answer appears:
-> `adyton config set profile.main.max_tokens 16384`. Adyton tells you when this happens.
+> **Reasoning models** (Nemotron, DeepSeek-R1-style, thinking-mode Qwen): the default
+> `max_tokens` is 4096, but heavy thinking can still eat the whole budget before any answer
+> appears — give them headroom: `adyton config set profile.main.max_tokens 16384`. Adyton also shows
+> the model's thinking in the overlay as it streams (💭, **experimental**) and warns when a reply is
+> cut off.
+>
+> **Experimental:** to make a model **skip reasoning server-side** (where the provider supports it),
+> set `extra_body` — a JSON object merged into the request. There's no universal switch; it's
+> per-provider: `{"reasoning_effort":"none"}` (OpenAI), `{"chat_template_kwargs":{"enable_thinking":false}}`
+> (Qwen3/vLLM). Many hosted gateways strip unknown fields, so verify with `config check` and a test
+> call. To just *hide* thinking locally, use `show_thinking = false` / `--no-thinking` instead.
 
 ## Use it
 
@@ -170,7 +178,7 @@ adyton context refresh               rebuild the machine-facts cache now
 adyton config  get <key> | set <key> <value> | set-key <profile> | check [-p <p>] | path
 adyton --version | --help
 
-OPTS: -s/--shell <zsh|bash|fish>  -p/--profile <name>  --no-context  --plain  --api-key <key>
+OPTS: -s/--shell <zsh|bash|fish>  -p/--profile <name>  --no-context  --plain  --no-thinking  --api-key <key>
 ```
 
 `fix --rerun` re-executes the failed command (your explicit consent — it may have side effects)
@@ -210,9 +218,11 @@ path` shows the location; written `0600`).
 | `session_log_commands` | 20 | recent commands sent (0 disables) |
 | `scrollback_lines` | 120 | terminal capture depth (0 disables) |
 | `git_timeout_ms` | 200 | git probe budget, skipped on miss |
+| `show_thinking` | true | **experimental** — stream the model's reasoning to the overlay (`--no-thinking` overrides) |
 
-Per profile: `wire` (`openai`/`anthropic`) · `base_url` · `model` · `max_tokens` (1024) ·
-`temperature` · `token_param` (`max_tokens`/`max_completion_tokens`) · `extra_headers`
+Per profile: `wire` (`openai`/`anthropic`) · `base_url` · `model` · `max_tokens` (4096) ·
+`temperature` · `token_param` (`max_tokens`/`max_completion_tokens`) · `extra_body` (**experimental**
+— a JSON object shallow-merged into the request; see below) · `extra_headers`
 (repeatable `Name: value`) · `api_key_cmd` (argv-style command printing the key — what
 `set-key` wires to the Keychain) · `api_key` (discouraged; prefer the Keychain or
 `ADYTON_API_KEY`/`ADYTON_<PROFILE>_API_KEY` env vars).

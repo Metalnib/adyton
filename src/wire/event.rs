@@ -6,6 +6,8 @@
 pub enum Event {
     /// A fragment of the assistant's text answer.
     TextDelta(String),
+    /// A fragment of reasoning — overlay-only, never in the command or answer.
+    ReasoningDelta(String),
     /// A fragment of a tool call's arguments (phase-2 agent loop).
     ToolCallDelta {
         index: u64,
@@ -13,7 +15,6 @@ pub enum Event {
         name: Option<String>,
         args_fragment: String,
     },
-    /// End of the response.
     Done {
         stop_reason: Option<String>,
         usage: Option<Usage>,

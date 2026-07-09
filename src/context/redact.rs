@@ -64,8 +64,7 @@ fn invokes_secret_tool(line: &str) -> bool {
     false
 }
 
-/// `<keyword> [ws] (=|:) anything` → keep up to the separator, mask the rest.
-/// Masking to end-of-line over-redacts multi-assignment lines — intended.
+/// Masks to end-of-line — over-redacts multi-assignment lines, which is intended.
 fn mask_kv_value(line: &str) -> String {
     // Ascii lowering preserves byte offsets, so indices map back to `line`.
     let lower = line.to_ascii_lowercase();
@@ -153,7 +152,7 @@ mod tests {
         redact_line(line).expect("line should be kept")
     }
 
-    // --- one test per rule row -------------------------------------------
+    // one test per §7.2 rule row
 
     #[test]
     fn kv_keyword_masks_the_value_to_end_of_line() {
@@ -230,8 +229,6 @@ mod tests {
             assert_eq!(redact_line(line), None, "{line:?} must be dropped");
         }
     }
-
-    // --- negative corpus: normal lines pass untouched ---------------------
 
     #[test]
     fn ordinary_commands_are_untouched() {

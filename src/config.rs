@@ -16,6 +16,7 @@ pub const ROOT_KEYS: &[&str] = &[
     "session_log_commands",
     "scrollback_lines",
     "git_timeout_ms",
+    "show_thinking",
 ];
 
 pub const PROFILE_KEYS: &[&str] = &[
@@ -28,6 +29,7 @@ pub const PROFILE_KEYS: &[&str] = &[
     "max_tokens",
     "token_param",
     "temperature",
+    "extra_body",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +73,7 @@ pub struct Profile {
     pub max_tokens: u32,
     pub token_param: Option<TokenParam>,
     pub temperature: Option<f64>,
+    pub extra_body: Option<String>,
 }
 
 impl Default for Profile {
@@ -82,9 +85,10 @@ impl Default for Profile {
             api_key: None,
             api_key_cmd: None,
             extra_headers: Vec::new(),
-            max_tokens: 1024,
+            max_tokens: 4096,
             token_param: None,
             temperature: None,
+            extra_body: None,
         }
     }
 }
@@ -118,6 +122,7 @@ pub struct Config {
     pub session_log_commands: usize,
     pub scrollback_lines: usize,
     pub git_timeout_ms: u64,
+    pub show_thinking: bool,
     pub profiles: BTreeMap<String, Profile>,
 }
 
@@ -129,6 +134,7 @@ impl Default for Config {
             session_log_commands: 20,
             scrollback_lines: 120,
             git_timeout_ms: 200,
+            show_thinking: true,
             profiles: BTreeMap::new(),
         }
     }
@@ -170,9 +176,6 @@ impl Config {
         Ok((name, profile))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Parsing
 
 fn err_at(line: usize, msg: impl std::fmt::Display) -> Error {
     Error::Config(format!("line {line}: {msg}"))
@@ -249,6 +252,7 @@ fn apply_root(config: &mut Config, key: &str, value: &str, line: usize) -> Resul
         "session_log_commands" => config.session_log_commands = parse_num(key, value, line)?,
         "scrollback_lines" => config.scrollback_lines = parse_num(key, value, line)?,
         "git_timeout_ms" => config.git_timeout_ms = parse_num(key, value, line)?,
+        "show_thinking" => config.show_thinking = parse_bool(key, value, line)?,
         other => {
             return Err(err_at(
                 line,
@@ -304,6 +308,8 @@ fn apply_profile(profile: &mut Profile, key: &str, value: &str, line: usize) -> 
                 err_at(line, format!("invalid number for temperature: \"{value}\""))
             })?);
         }
+        // Raw JSON, validated by `config check` (JSON parsing stays in wire/, D3).
+        "extra_body" => profile.extra_body = Some(value.to_owned()),
         other => {
             return Err(err_at(
                 line,
@@ -323,8 +329,16 @@ fn parse_num<T: std::str::FromStr>(key: &str, value: &str, line: usize) -> Resul
         .map_err(|_| err_at(line, format!("invalid number for {key}: \"{value}\"")))
 }
 
-// ---------------------------------------------------------------------------
-// Keyed access (config get / config set)
+fn parse_bool(key: &str, value: &str, line: usize) -> Result<bool> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(err_at(
+            line,
+            format!("{key} must be true or false, got \"{other}\""),
+        )),
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum KeyRef<'a> {
@@ -366,6 +380,7 @@ pub fn get(config: &Config, key: &str) -> Result<Option<String>> {
             "session_log_commands" => Some(config.session_log_commands.to_string()),
             "scrollback_lines" => Some(config.scrollback_lines.to_string()),
             "git_timeout_ms" => Some(config.git_timeout_ms.to_string()),
+            "show_thinking" => Some(config.show_thinking.to_string()),
             _ => unreachable!("validated by parse_key"),
         }),
         KeyRef::Profile { name, key: k } => {
@@ -388,14 +403,14 @@ pub fn get(config: &Config, key: &str) -> Result<Option<String>> {
                 "max_tokens" => Some(p.max_tokens.to_string()),
                 "token_param" => Some(p.token_param().as_str().to_owned()),
                 "temperature" => p.temperature.map(|t| t.to_string()),
+                "extra_body" => p.extra_body.clone(),
                 _ => unreachable!("validated by parse_key"),
             })
         }
     }
 }
 
-/// Comment-preserving single-key update. Duplicate assignments of the key in
-/// the target region collapse into the one new line.
+/// Comment-preserving single-key update.
 pub fn set_in_text(text: &str, key: &str, value: &str) -> Result<String> {
     parse(text)?; // never edit a file we cannot read back
     let kref = parse_key(key)?;
@@ -407,7 +422,6 @@ pub fn set_in_text(text: &str, key: &str, value: &str) -> Result<String> {
             if let Some(span) = profile_region(&lines, name) {
                 (span, k)
             } else {
-                // Section absent: append it wholesale.
                 let mut out = text.to_owned();
                 if !out.is_empty() && !out.ends_with('\n') {
                     out.push('\n');
@@ -430,7 +444,6 @@ pub fn set_in_text(text: &str, key: &str, value: &str) -> Result<String> {
     let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
     let new_line = format!("{key_name} = {value}");
     if matches.is_empty() {
-        // Insert after the last non-blank line of the region (or at its start).
         let insert_at = (region.0..region.1)
             .rev()
             .find(|&i| !lines[i].trim().is_empty())
@@ -492,7 +505,6 @@ fn profile_region(lines: &[&str], name: &str) -> Option<(usize, usize)> {
     Some((header + 1, end))
 }
 
-// ---------------------------------------------------------------------------
 // API key resolution (spec §3): flag → env → profile env → api_key_cmd → file.
 
 #[derive(Debug, PartialEq, Eq)]
@@ -709,12 +721,25 @@ extra_headers = x-team: infra
         );
         assert_eq!(
             get(&cfg, "profile.local.max_tokens").unwrap().unwrap(),
-            "1024"
+            "4096"
         );
         assert_eq!(get(&cfg, "profile.local.temperature").unwrap(), None);
         assert_eq!(get(&cfg, "profile.ghost.model").unwrap(), None);
         assert!(get(&cfg, "no_such_key").is_err());
+        assert_eq!(get(&cfg, "show_thinking").unwrap().unwrap(), "true");
         assert!(get(&cfg, "profile.local.bogus").is_err());
+    }
+
+    #[test]
+    fn extra_body_is_stored_verbatim() {
+        let cfg = parse(
+            "[profile.p]\nwire = openai\nbase_url = http://x/v1\nmodel = m\nextra_body = {\"reasoning_effort\":\"none\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            get(&cfg, "profile.p.extra_body").unwrap().unwrap(),
+            "{\"reasoning_effort\":\"none\"}"
+        );
     }
 
     #[test]

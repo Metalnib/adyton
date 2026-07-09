@@ -1,6 +1,4 @@
-//! Context collection (specification §7). S7 ships the machine-facts cache
-//! (§7.1); live context — session log, scrollback (§7.3/§7.4) — arrives with
-//! S9.
+//! Context collection (specification §7).
 //!
 //! Refresh never blocks a request: a stale cache is served as-is while a
 //! detached thread rebuilds it during the network call. Version mismatch is

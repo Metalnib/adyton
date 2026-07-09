@@ -2,7 +2,7 @@
 //! miniserde's own errors carry no detail, so every parse failure here wraps
 //! the raw offending line — for short SSE chunks that is the diagnostic.
 
-use miniserde::json::{Number, Value};
+use miniserde::json::{Number, Object, Value};
 
 use crate::error::{Error, Result};
 
@@ -27,6 +27,23 @@ pub fn u64_value(v: u64) -> Value {
 
 pub fn f64_value(v: f64) -> Value {
     Value::Number(Number::F64(v))
+}
+
+/// Shallow-merge a JSON-object string (profile `extra_body`) into a request
+/// body; a non-object is ignored (`config check` validates it up front).
+pub fn merge_into(body: &mut Object, extra: Option<&str>) {
+    if let Some(s) = extra
+        && let Ok(Value::Object(obj)) = miniserde::json::from_str::<Value>(s)
+    {
+        for (key, value) in obj {
+            body.insert(key, value);
+        }
+    }
+}
+
+/// Validates `extra_body`, keeping JSON inside the wire layer (D3).
+pub fn is_object(s: &str) -> bool {
+    matches!(miniserde::json::from_str::<Value>(s), Ok(Value::Object(_)))
 }
 
 /// Typed extractors for asserting on `Value` trees in adapter tests —
@@ -84,5 +101,14 @@ mod tests {
     fn failure_carries_the_raw_line() {
         let err = from_line::<Probe>("{broken").unwrap_err();
         assert_eq!(err.to_string(), "unparseable chunk: {broken");
+    }
+
+    #[test]
+    fn is_object_accepts_only_json_objects() {
+        use super::is_object;
+        assert!(is_object(r#"{"reasoning_effort":"none"}"#));
+        assert!(!is_object("[1,2]"));
+        assert!(!is_object(r#""a string""#));
+        assert!(!is_object("{broken"));
     }
 }

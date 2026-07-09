@@ -12,6 +12,7 @@ mod paths;
 mod prompt;
 mod run;
 mod secret;
+mod selfupdate;
 mod wire;
 
 use std::process::ExitCode;
@@ -48,6 +49,7 @@ fn run() -> Result<()> {
         Command::Ask { opts, query } => run::ask(&opts, &query),
         Command::Fix { opts, rerun } => run::fix(&opts, rerun),
         Command::ContextRefresh => context::refresh_foreground(),
+        Command::SelfUpdate { check, yes } => selfupdate::self_update(check, yes),
     }
 }
 

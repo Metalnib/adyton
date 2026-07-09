@@ -1,0 +1,115 @@
+name: release
+
+# Tag-driven, reproducible releases (spec §12). Each target builds NATIVELY on
+# a matching-arch runner (darwin on macOS runners; musl inside rust:1-alpine on
+# x86_64 + arm64 Linux runners) — no cross-compilation, matching the locally
+# verified builds. The `--target` triple is only the artifact name.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.triple }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - triple: aarch64-apple-darwin
+            os: macos-latest
+            budget: 1572864
+          - triple: x86_64-apple-darwin
+            os: macos-13
+            budget: 1572864
+          - triple: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            container: rust:1-alpine
+            budget: 2097152
+          - triple: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            container: rust:1-alpine
+            budget: 2097152
+    steps:
+      - uses: actions/checkout@v4
+      - name: alpine build deps
+        if: matrix.container == 'rust:1-alpine'
+        run: apk add --no-cache musl-dev build-base tar file
+      - name: rust toolchain (macOS)
+        if: ${{ !matrix.container }}
+        run: rustup toolchain install stable --profile minimal
+      # Native build: host arch == target triple, so no --target needed.
+      - run: cargo build --release
+      - name: size gate (spec §8)
+        run: scripts/ci/size-gate.sh target/release/adyton ${{ matrix.budget }}
+      - name: verify static (musl)
+        if: matrix.container == 'rust:1-alpine'
+        run: file target/release/adyton | grep -q static
+      - name: package
+        # COPYFILE_DISABLE stops macOS bsdtar embedding ._* / xattr entries that
+        # make GNU tar warn on extraction (seen in the S17 install test).
+        run: |
+          name="adyton-${GITHUB_REF_NAME}-${{ matrix.triple }}"
+          COPYFILE_DISABLE=1 tar -czf "$name.tar.gz" -C target/release adyton
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adyton-${{ matrix.triple }}
+          path: adyton-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: cd dist && shasum -a 256 *.tar.gz > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  # S20: render the Homebrew formula from the release checksums and push it to
+  # the tap. No-ops until Metalnib/homebrew-tap exists and a TAP_TOKEN secret
+  # (a PAT with contents:write on that repo) is set — so it never blocks a release.
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: render + push formula
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "TAP_TOKEN unset — skipping Homebrew tap update"; exit 0
+          fi
+          ver="${TAG#v}"
+          curl -fsSL -o sums "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/SHA256SUMS.txt"
+          sha() { awk -v a="adyton-${TAG}-$1.tar.gz" '$2 == a { print $1 }' sums; }
+          sed \
+            -e "s/{{VERSION}}/${ver}/g" \
+            -e "s/{{SHA256_AARCH64_APPLE_DARWIN}}/$(sha aarch64-apple-darwin)/" \
+            -e "s/{{SHA256_X86_64_APPLE_DARWIN}}/$(sha x86_64-apple-darwin)/" \
+            -e "s/{{SHA256_AARCH64_UNKNOWN_LINUX_MUSL}}/$(sha aarch64-unknown-linux-musl)/" \
+            -e "s/{{SHA256_X86_64_UNKNOWN_LINUX_MUSL}}/$(sha x86_64-unknown-linux-musl)/" \
+            contrib/homebrew/adyton.rb > adyton.rb
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/Metalnib/homebrew-tap" tap
+          mkdir -p tap/Formula
+          cp adyton.rb tap/Formula/adyton.rb
+          cd tap
+          git config user.name "adyton-release"
+          git config user.email "release@users.noreply.github.com"
+          git add Formula/adyton.rb
+          git commit -m "adyton ${ver}" && git push

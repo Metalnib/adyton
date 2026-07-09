@@ -1,9 +1,12 @@
 [package]
 name = "adyton"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.96"
 description = "Natural language → shell command, streamed to your prompt — never executed for you"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Metalnib/adyton"
+homepage = "https://github.com/Metalnib/adyton"
 publish = false
 
 [dependencies]

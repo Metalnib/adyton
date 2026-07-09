@@ -279,3 +279,52 @@ widget) is never read — reading would block on EOF.
 - Default hotkey Ctrl-G: confirm it doesn't collide for target users (zsh `^G` is
   `list-expand`/unused-ish; readline `^G` is abort — acceptable since the widget is explicit).
 - Phase-2 items intentionally absent: daemon protocol, agent-loop tool schema, async widget.
+
+## 12. Release & distribution (v0.1.1)
+
+The single naming contract that the release workflow (S16) produces and that `install.sh` (S17),
+`selfupdate` (S18), Homebrew (S20) and MacPorts (S21) all consume.
+
+**Target triples** (host-native builds, one artifact each):
+
+| Triple | `std::env::consts::{OS}/{ARCH}` | Runner |
+|---|---|---|
+| `aarch64-apple-darwin` | macos / aarch64 | macos-latest |
+| `x86_64-apple-darwin` | macos / x86_64 | macos-13 |
+| `x86_64-unknown-linux-musl` | linux / x86_64 | ubuntu-latest + `rust:1-alpine` |
+| `aarch64-unknown-linux-musl` | linux / aarch64 | ubuntu-24.04-arm + `rust:1-alpine` |
+
+**Assets on each GitHub Release** (tag `v<semver>`):
+- `adyton-v<semver>-<triple>.tar.gz` — the tarball contains a single top-level `adyton` binary.
+- `SHA256SUMS.txt` — `shasum -a 256` lines over the four tarballs.
+
+**Runtime triple selection** (install.sh + selfupdate): map the running `(OS, ARCH)` to a triple
+via the table above; error clearly on an unsupported pair.
+
+**Integrity:** download over HTTPS (transport auth to `github.com`/its CDN), then verify the
+tarball against `SHA256SUMS.txt` by shelling to the system `sha256` tool (`shasum -a 256` or
+`sha256sum`) — **no Rust hashing dependency** (same "shell out for the rare system thing" pattern
+as keychain-via-`security`). A checksum mismatch aborts the install/update.
+
+### 12.1 `adyton selfupdate` (S18)
+`adyton selfupdate [--check] [--yes]`. `api_base` is injectable (env `ADYTON_GITHUB_API`,
+default `https://api.github.com/repos/Metalnib/adyton`) — a GHE override and the test seam.
+- GET `{api_base}/releases/latest` with `User-Agent: adyton/<ver>` + `Accept:
+  application/vnd.github+json` (GitHub 403s a missing UA); parse `tag_name` + `assets[]`
+  (`name`, `browser_download_url`) with miniserde. Numeric 3-part compare to `CARGO_PKG_VERSION`
+  (`v` stripped): equal → "latest"; ahead → refuse to downgrade; unparseable → clear error, no panic.
+  `--check` reports and exits without touching anything.
+- Update (behind only): resolve the host triple → asset `adyton-<tag>-<triple>.tar.gz`; take its
+  `browser_download_url` from the JSON (ureq follows the 302 to the CDN). Work **entirely inside
+  `canonicalize(current_exe())`'s parent** (same filesystem → atomic rename; no `EXDEV`):
+  1. download the tarball; 2. **verify its sha256** against `SHA256SUMS.txt` via the system tool;
+  3. **extract** `adyton` from the tarball (`tar -xzf`) into a temp subdir; 4. `chmod 0755`;
+  5. atomic `rename()` over `current_exe()` (Unix keeps the live process's inode). Verify **before**
+  extract; remove temp artifacts on every path.
+- **Guardrails:** if the canonical exe sits under a package-manager prefix (`/opt/homebrew`,
+  `/opt/local`, `/nix/store`) → friendly "installed via <manager>; update through it" and stop
+  (early message, not the security gate). Otherwise attempt the swap and let `rename`'s
+  `EACCES`/`EPERM` produce "couldn't replace <path> — reinstall or use your package manager".
+  With a TTY and no `--yes`, prompt `Update X → Y? [y/N]`; non-TTY proceeds (the explicit command
+  is consent). Never auto-updates; no background calls.
+- Exit codes reuse §2.1 (`1` network/verify/extract failure, `3` PM-managed/un-writable).

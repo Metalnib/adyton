@@ -168,7 +168,7 @@ Acceptance: §9 criterion 3 (fish 3.x); validation-log rows upgraded from [W] to
 
 ---
 
-## M6 — v0.1.1: distribution & self-update
+## M6 — v0.1.1: distribution & self-update  ✅ (implemented; release is one signed tag push)
 
 Goal: a stranger installs adyton in one line and it keeps itself current — without breaking the
 size/minimalism ethos. **No `self_update` crate** (drags reqwest + dozens of deps); hand-roll on
@@ -194,8 +194,8 @@ Acceptance: pushing a tag yields a Release with 4 tarballs + checksums; gates en
 - POSIX `sh`, idempotent, no sudo; clear failure messages. Acceptance: clean-machine install in a
   fresh Linux container + macOS, ending at a working `adyton --version`.
 
-### S18 · `adyton self update` — **M**
-New subcommand (`adyton self update [--check] [--yes]`):
+### S18 · `adyton selfupdate` — **M**
+New subcommand (`adyton selfupdate [--check] [--yes]`):
 - GET the "latest release" JSON (ureq), parse the tag (miniserde), semver-compare to
   `CARGO_PKG_VERSION`; `--check` reports and exits.
 - if newer: download the current-triple asset to a temp file **in the same dir as
@@ -209,17 +209,25 @@ against a mock release endpoint (download → verify → swap) in a temp dir; a 
 the real GitHub release.
 
 ### S19 · docs, help, acceptance — **S**
-README install one-liner + `self update` section; spec §12 update contract (triple map, integrity,
+README install one-liner + `selfupdate` section; spec §12 update contract (triple map, integrity,
 guardrails); `--help` updated; validation-log note. Acceptance: README lets a stranger install and
 self-update from zero.
 
-### Optional channels (decide scope; not required for the core one-liner)
-- **cargo-binstall** — `[package.metadata.binstall]` in Cargo.toml mapping the stable asset names →
-  `cargo binstall adyton` pulls prebuilt (needs a crates.io registry entry, so tied to publish).
-- **crates.io publish** — enables `cargo install adyton` (from source) + binstall; check the name
-  `adyton` is free first; adds release-time `cargo publish`.
-- **Homebrew tap** — a `Metalnib/homebrew-tap` formula bumped by the release workflow;
-  `brew install Metalnib/tap/adyton`. Most upkeep of the three.
+### S20 · Homebrew tap — **S** *(fully automatable)*
+Repo `Metalnib/homebrew-tap` with `Formula/adyton.rb` (downloads the release tarball for the
+host arch, verifies sha256, installs the binary + a caveat printing the `init` line). The S16
+release workflow bumps the formula's `version`/`url`/`sha256` and pushes to the tap on each tag.
+`brew install Metalnib/tap/adyton`, `brew upgrade` for updates. Acceptance: tap install on a
+clean macOS ends at a working `adyton --version`; a new tag auto-bumps the formula.
+
+### S21 · MacPorts Portfile — **M** *(prepare + maintain; upstream publish is external)*
+`contrib/macports/Portfile` using the `cargo` PortGroup, fetching the tagged GitHub source
+tarball; the release workflow updates the version + checksums. Ship **local-install docs**
+(`port` from a local file / private ports tree) now; provide an **upstream-submission checklist**
+for the PR into `macports/macports-ports` (review + maintainership are MacPorts', not ours — this
+step is manual by nature). Acceptance: `port install` from the local Portfile builds and runs;
+Portfile stays version-bumped by CI. NOT in scope: `cargo-binstall`, `crates.io` publish
+(deferred — revisit if Rust-ecosystem reach is wanted).
 
 ---
 

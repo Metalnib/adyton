@@ -61,6 +61,7 @@ pub enum Command {
     Fix { opts: RunOpts, rerun: bool },
     ContextRefresh,
     Config(ConfigAction),
+    SelfUpdate { check: bool, yes: bool },
     Version,
     Help,
 }
@@ -74,6 +75,7 @@ USAGE:
   adyton ask [OPTIONS] -- <question>     answer a question (prose, streamed)
   adyton fix [OPTIONS] [--rerun]         fix the last failed command
   adyton context refresh                 rebuild the context cache
+  adyton selfupdate [--check] [--yes]    update adyton to the latest release
   adyton config get <key>                print an effective config value
   adyton config set <key> <value>        update the config file
   adyton config set-key <profile>        store an api key in the macOS keychain
@@ -111,6 +113,7 @@ where
             "fix" => parse_run(&mut parser, RunKind::Fix),
             "context" => parse_context(&mut parser),
             "config" => parse_config(&mut parser),
+            "selfupdate" => parse_selfupdate(&mut parser),
             other => Err(Error::Usage(format!(
                 "unknown command \"{other}\" (try `adyton --help`)"
             ))),
@@ -184,6 +187,19 @@ fn parse_run(parser: &mut Parser, kind: RunKind) -> Result<Command> {
 fn parse_init(parser: &mut Parser) -> Result<Command> {
     let shell = Shell::parse(&next_value(parser, "init: missing shell")?)?;
     finish(parser, Command::Init { shell })
+}
+
+fn parse_selfupdate(parser: &mut Parser) -> Result<Command> {
+    let mut check = false;
+    let mut yes = false;
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Arg::Long("check") => check = true,
+            Arg::Long("yes") | Arg::Short('y') => yes = true,
+            arg => return Err(arg.unexpected().into()),
+        }
+    }
+    Ok(Command::SelfUpdate { check, yes })
 }
 
 fn parse_context(parser: &mut Parser) -> Result<Command> {
@@ -389,6 +405,25 @@ mod tests {
         );
         assert!(usage_of(&["fix", "something"]).contains("no arguments"));
         assert!(usage_of(&["suggest", "--rerun", "q"]).contains("--rerun"));
+    }
+
+    #[test]
+    fn selfupdate_flags() {
+        assert_eq!(
+            cmd(&["selfupdate"]).unwrap(),
+            Command::SelfUpdate {
+                check: false,
+                yes: false
+            }
+        );
+        assert_eq!(
+            cmd(&["selfupdate", "--check", "--yes"]).unwrap(),
+            Command::SelfUpdate {
+                check: true,
+                yes: true
+            }
+        );
+        assert!(usage_of(&["selfupdate", "bogus"]).contains("bogus"));
     }
 
     #[test]

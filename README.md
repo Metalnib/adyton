@@ -24,16 +24,36 @@ commands, terminal output) so the answers fit *your* system, not a generic one.
 
 ## Install
 
-Build from source (Rust ≥ 1.96):
+**One line** (macOS / Linux, prebuilt static binary — verifies its checksum):
 
 ```sh
-git clone <repo-url> adyton && cd adyton
-cargo build --release
-# binary at target/release/adyton — copy it anywhere on your PATH
-install -m 755 target/release/adyton ~/.local/bin/
+curl -fsSL https://raw.githubusercontent.com/Metalnib/adyton/main/install.sh | sh
 ```
 
-Release artifacts (macOS arm64, Linux musl) ship with tagged releases.
+Installs to `~/.local/bin` (override with `ADYTON_INSTALL_DIR`); pin a version with
+`ADYTON_VERSION=v0.1.1`. It prints the shell-integration line to add next.
+
+**Keep it current:**
+
+```sh
+adyton selfupdate          # --check to only look; skipped for package-manager installs
+```
+
+**Package managers** (once published — see [docs/RELEASING.md](docs/RELEASING.md)):
+
+```sh
+brew install Metalnib/tap/adyton     # Homebrew (macOS/Linux) — brew upgrade to update
+sudo port install adyton             # MacPorts (macOS) — sudo port upgrade adyton to update
+```
+
+**From source** (Rust ≥ 1.96):
+
+```sh
+git clone https://github.com/Metalnib/adyton && cd adyton
+cargo build --release && install -m 755 target/release/adyton ~/.local/bin/
+```
+
+Licensed under [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE), at your option.
 
 ## Set up your shell
 
@@ -141,6 +161,7 @@ adyton suggest [OPTS] -- <query>     natural language → command on stdout
 adyton ask     [OPTS] -- <question>  prose answer, streamed
 adyton fix     [OPTS] [--rerun]      correct the last failed command
 adyton init    <zsh|bash|fish>       print shell glue for eval
+adyton selfupdate [--check] [--yes]  update to the latest GitHub release
 adyton context refresh               rebuild the machine-facts cache now
 adyton config  get <key> | set <key> <value> | set-key <profile> | check [-p <p>] | path
 adyton --version | --help

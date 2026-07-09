@@ -420,6 +420,157 @@ fn recorded_fixtures_replay_through_the_full_binary() {
     );
 }
 
+/// Multi-request HTTP mock: serves `routes` (path → (content-type, body)) on a
+/// loop over a pre-bound listener (caller needs its address to build the URLs
+/// the routes reference), for the self-update flow's several sequential GETs.
+fn serve_on(listener: std::net::TcpListener, routes: Vec<(String, &'static str, Vec<u8>)>) {
+    use std::io::{Read as _, Write as _};
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut stream) = conn else { continue };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .ok();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut byte) {
+                    Ok(1) => head.push(byte[0]),
+                    _ => break,
+                }
+            }
+            let req = String::from_utf8_lossy(&head);
+            let path = req
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .unwrap_or("")
+                .to_owned();
+            let route = routes.iter().find(|(p, _, _)| *p == path);
+            let response = match route {
+                Some((_, ct, body)) => {
+                    let mut r = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: {ct}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .into_bytes();
+                    r.extend_from_slice(body);
+                    r
+                }
+                None => b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    .to_vec(),
+            };
+            let _ = stream.write_all(&response);
+        }
+    });
+}
+
+fn host_triple() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("linux", "x86_64") => "x86_64-unknown-linux-musl",
+        ("linux", "aarch64") => "aarch64-unknown-linux-musl",
+        _ => panic!("unsupported test host"),
+    }
+}
+
+/// §12.1 end-to-end: a copy of the binary updates *itself* from a mock release
+/// (download → verify sha256 → extract → atomic rename) and then runs the new
+/// payload. This is the assertion that matters most (advisor #1 + #3).
+#[test]
+fn self_update_verifies_extracts_and_atomically_swaps_the_binary() {
+    let home = TempHome::new("selfupdate");
+    let triple = host_triple();
+    let asset_name = format!("adyton-v9.9.9-{triple}.tar.gz");
+
+    // Build the "new release" tarball: a top-level `adyton` that identifies itself.
+    let payload = home.dir.join("payload");
+    std::fs::create_dir_all(&payload).unwrap();
+    std::fs::write(payload.join("adyton"), "#!/bin/sh\necho UPDATED-PAYLOAD\n").unwrap();
+    let tarball = home.dir.join(&asset_name);
+    assert!(
+        std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&payload)
+            .arg("adyton")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let tarball_bytes = std::fs::read(&tarball).unwrap();
+    let sha = {
+        let o = std::process::Command::new("shasum")
+            .args(["-a", "256"])
+            .arg(&tarball)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout)
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_owned()
+    };
+
+    // Bind once, build the URLs from its real address, then serve on it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let real_base = format!("http://{}", listener.local_addr().unwrap());
+    let latest_json = format!(
+        r#"{{"tag_name":"v9.9.9","assets":[{{"name":"{asset_name}","browser_download_url":"{real_base}/dl/bin"}},{{"name":"SHA256SUMS.txt","browser_download_url":"{real_base}/dl/sums"}}]}}"#
+    );
+    let sums = format!("{sha}  {asset_name}\n");
+    serve_on(
+        listener,
+        vec![
+            (
+                "/releases/latest".to_owned(),
+                "application/json",
+                latest_json.into_bytes(),
+            ),
+            (
+                "/dl/bin".to_owned(),
+                "application/octet-stream",
+                tarball_bytes,
+            ),
+            ("/dl/sums".to_owned(), "text/plain", sums.into_bytes()),
+        ],
+    );
+
+    // Copy the real binary to a throwaway path and let it replace *itself*.
+    let exe = home.dir.join("adyton");
+    std::fs::copy(env!("CARGO_BIN_EXE_adyton"), &exe).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let out = std::process::Command::new(&exe)
+        .args(["selfupdate", "--yes"])
+        .env("ADYTON_GITHUB_API", &real_base)
+        .output()
+        .expect("run selfupdate");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("updated to adyton 9.9.9"),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // The binary at the same path is now the new payload.
+    let after = std::process::Command::new(&exe).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&after.stdout).trim(),
+        "UPDATED-PAYLOAD"
+    );
+}
+
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

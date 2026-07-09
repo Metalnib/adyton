@@ -37,7 +37,8 @@ jobs:
       - run: scripts/ci/size-gate.sh target/x86_64-unknown-linux-musl/release/adyton 2097152
       - run: scripts/ci/startup-gate.sh target/x86_64-unknown-linux-musl/release/adyton 20
       - name: verify fully static
+        # glibc `ldd` prints "statically linked" and exits 0 for a static-pie
+        # binary, so assert via `file` instead (matches "static-pie"/"statically").
         run: |
           file target/x86_64-unknown-linux-musl/release/adyton
-          ! ldd target/x86_64-unknown-linux-musl/release/adyton 2>/dev/null || {
-            echo "expected a static binary" >&2; exit 1; }
+          file target/x86_64-unknown-linux-musl/release/adyton | grep -q static

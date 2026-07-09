@@ -168,6 +168,61 @@ Acceptance: §9 criterion 3 (fish 3.x); validation-log rows upgraded from [W] to
 
 ---
 
+## M6 — v0.1.1: distribution & self-update
+
+Goal: a stranger installs adyton in one line and it keeps itself current — without breaking the
+size/minimalism ethos. **No `self_update` crate** (drags reqwest + dozens of deps); hand-roll on
+the ureq + miniserde already in the tree, and shell out to the system `sha256` tool for integrity
+(same "shell out for the rare system thing" pattern as keychain-via-`security`). Zero new deps.
+
+### S16 · Release CI workflow — **M** *(foundation for the rest)*
+`.github/workflows/release.yml`, triggered on tag `v*`. Build matrix → run gates → package →
+publish, so every release is reproducible (v0.1.0 was hand-built locally — this replaces that):
+- targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-musl`,
+  `aarch64-unknown-linux-musl`.
+- per target: build `--release`, run the §8 size + startup gates, `tar.gz` with the **stable name
+  `adyton-<version>-<triple>.tar.gz`** (the contract install.sh + self-update depend on).
+- one `SHA256SUMS.txt` across all artifacts; create the GitHub Release and upload.
+Acceptance: pushing a tag yields a Release with 4 tarballs + checksums; gates enforced per target.
+
+### S17 · `install.sh` — **M**
+`curl -fsSL https://raw.githubusercontent.com/Metalnib/adyton/main/install.sh | sh`:
+- detect os/arch → triple; resolve the latest (or `ADYTON_VERSION`-pinned) release via the GitHub
+  API; download the matching tarball **and** `SHA256SUMS.txt` over HTTPS; **verify** with
+  `shasum -a 256` / `sha256sum`; install to `${ADYTON_INSTALL_DIR:-~/.local/bin}` (warn if not on
+  PATH); print the exact `eval "$(adyton init <shell>)"` line for the detected shell.
+- POSIX `sh`, idempotent, no sudo; clear failure messages. Acceptance: clean-machine install in a
+  fresh Linux container + macOS, ending at a working `adyton --version`.
+
+### S18 · `adyton self update` — **M**
+New subcommand (`adyton self update [--check] [--yes]`):
+- GET the "latest release" JSON (ureq), parse the tag (miniserde), semver-compare to
+  `CARGO_PKG_VERSION`; `--check` reports and exits.
+- if newer: download the current-triple asset to a temp file **in the same dir as
+  `current_exe()`**, verify SHA256 via the system tool, `chmod +x`, atomic `rename()` over
+  `current_exe()` (Unix replaces a running binary's path safely).
+- **guardrails:** refuse if `current_exe()` isn't writable, or sits under a package-manager prefix
+  (`/opt/homebrew`, `/opt/local`, `/usr`, `/nix`) — tell the user to update via that manager
+  instead. Never auto-updates; no background phone-home.
+Acceptance: unit tests for triple mapping + version compare; integration test drives the updater
+against a mock release endpoint (download → verify → swap) in a temp dir; a live `--check` against
+the real GitHub release.
+
+### S19 · docs, help, acceptance — **S**
+README install one-liner + `self update` section; spec §12 update contract (triple map, integrity,
+guardrails); `--help` updated; validation-log note. Acceptance: README lets a stranger install and
+self-update from zero.
+
+### Optional channels (decide scope; not required for the core one-liner)
+- **cargo-binstall** — `[package.metadata.binstall]` in Cargo.toml mapping the stable asset names →
+  `cargo binstall adyton` pulls prebuilt (needs a crates.io registry entry, so tied to publish).
+- **crates.io publish** — enables `cargo install adyton` (from source) + binstall; check the name
+  `adyton` is free first; adds release-time `cargo publish`.
+- **Homebrew tap** — a `Metalnib/homebrew-tap` formula bumped by the release workflow;
+  `brew install Metalnib/tap/adyton`. Most upkeep of the three.
+
+---
+
 ## Explicitly deferred (phase 2+ — not stories yet)
 Daemon + warm pool · agent loop/tool calls · async zsh widget · terminal-API scrollback (tier 2b,
 OSC 133) · ghost text · Responses API adapter.
